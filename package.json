@@ -1,0 +1,31 @@
+{
+  "name": "dynamaws",
+  "version": "0.1.0",
+  "description": "Simple DynamoDB helper.",
+  "main": "index.js",
+  "engines": {
+    "node": ">=4.3.2"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wilfredwee/dynamaws.git"
+  },
+  "keywords": [
+    "DynamoDB",
+    "AWS",
+    "ORM"
+  ],
+  "author": "Wilfred Wee",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/wilfredwee/dynamaws/issues"
+  },
+  "homepage": "https://github.com/wilfredwee/dynamaws#readme",
+  "dependencies": {
+    "aws-sdk": "^2.7.6",
+    "lodash": "^4.17.2"
+  }
+}
