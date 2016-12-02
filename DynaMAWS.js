@@ -31,7 +31,7 @@ function batchWrite(tableName, requestArr) {
     return docClient.batchWrite(params).promise();
   }
 
-  let sequence = Promise.resolve();
+  let sequence = Promise.resolve({});
 
   for(let i=0; i<batches.length; i++) {
     let batch = batches[i];
@@ -39,7 +39,12 @@ function batchWrite(tableName, requestArr) {
     sequence = sequence.then(function(sequenceItem) {
       return new Promise((resolve, reject) => {
         setTimeout(() => {
-          resolve(doBatchWrite(batch));
+          const toResolve = doBatchWrite(batch)
+            .then((dynamoData) => {
+              return _.merge(sequenceItem, dynamoData);
+            });
+
+          resolve(toResolve);
         }, 300)
       })
     });
