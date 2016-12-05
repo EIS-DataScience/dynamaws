@@ -106,6 +106,7 @@ module.exports = {
     });
   },
 
+  // TODO: Deal with UnprocessedKeys, exponential backoff.
   batchGet: function(tableName, keyString, keyValues) {
     const keys = keyValues.map((keyValue) => {
       let keyObj = {};
@@ -115,18 +116,48 @@ module.exports = {
       return keyObj;
     });
 
-    const params = {
-      RequestItems: {
-        [tableName]: {
-          Keys: keys
-        }
-      }
-    };
+    const BATCH_LIMIT = 100;
+    const batches = keys.reduce((acc, key) => {
+      let lastIndex = acc.length === 0? 0 : acc.length - 1;
 
-    return docClient.batchGet(params)
-      .promise()
-      .then((dynamoData) => {
-        return dynamoData.Responses[tableName];
+      if(!acc[lastIndex]) {
+        acc[lastIndex] = [];
+      }
+
+      if(acc[lastIndex].length >= BATCH_LIMIT) {
+        acc.push([]);
+
+        lastIndex = acc.length - 1;
+      }
+
+      acc[lastIndex].push(key);
+
+      return acc;
+    }, []);
+
+    const batchesDonePromises = batches.map((keysBatch) => {
+      const params = {
+        RequestItems: {
+          [tableName]: {
+            Keys: keysBatch
+          }
+        }
+      };
+
+      return docClient.batchGet(params)
+        .promise()
+        .then((dynamoData) => {
+          if(Object.keys(dynamoData.UnprocessedKeys).length > 0) {
+            console.warn("There were unprocessed keys in batchGet. The keys are:", dynamoData.UnprocessedKeys);
+          }
+
+          return dynamoData.Responses[tableName];
+        });
+    });
+
+    return Promise.all(batchesDonePromises)
+      .then((resultArr) => {
+        return _.flatten(resultArr);
       });
   },
 
