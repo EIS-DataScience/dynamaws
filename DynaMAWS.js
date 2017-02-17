@@ -303,8 +303,11 @@ module.exports = {
       KeyConditionExpression: `${conditionKey} = ${conditionVal}`,
       ExpressionAttributeNames: expressionAttributeNames,
       ExpressionAttributeValues: expressionAttributeValues,
-      Limit: limit
     };
+
+    if(limit > 0) {
+      params.Limit = limit;
+    }
 
     return docClient.query(params)
       .promise()
