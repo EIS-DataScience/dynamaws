@@ -53,10 +53,10 @@ function batchWrite(tableName, requestArr) {
   return sequence;
 }
 
-function handleQueryResponse(queryResponse, params) {
+function handleQueryResponse(queryResponse, params, delay) {
   let items = []
-
-  function handleQueryResponseHelper(queryResponse, params) {
+  
+  function handleQueryResponseHelper(queryResponse, params) {    
     items = items.concat(queryResponse.Items);
 
     if(queryResponse.LastEvaluatedKey) {
@@ -64,8 +64,13 @@ function handleQueryResponse(queryResponse, params) {
 
       clonedParams["ExclusiveStartKey"] = queryResponse.LastEvaluatedKey;
 
-      return docClient.query(clonedParams)
-        .promise()
+      let delayedReq = new Promise((resolve) => {
+        setTimeout(() => {
+          resolve(docClient.query(clonedParams).promise());
+        }, delay)
+      });
+
+      return delayedReq
         .then((dynamoData) => {
           return handleQueryResponseHelper(dynamoData, params);
         });
@@ -282,7 +287,7 @@ module.exports = {
     return batchWrite(tableName, deleteRequestArr);
   },
 
-  queryIndex: function(tableName, indexName, queryKey, queryVal) {
+  queryIndex: function(tableName, indexName, queryKey, queryVal, limit=0, delay=0) {
     const conditionKey = `#${queryKey}`;
     const conditionVal = `:${queryKey}`;
 
@@ -298,12 +303,13 @@ module.exports = {
       KeyConditionExpression: `${conditionKey} = ${conditionVal}`,
       ExpressionAttributeNames: expressionAttributeNames,
       ExpressionAttributeValues: expressionAttributeValues,
+      Limit: limit
     };
 
     return docClient.query(params)
       .promise()
       .then((dynamoData) => {
-        return handleQueryResponse(dynamoData, params);
+        return handleQueryResponse(dynamoData, params, delay);
       });
   }
 }
