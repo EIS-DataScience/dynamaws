@@ -182,19 +182,19 @@ module.exports = {
       });
   },
 
-// batchCreate() is built to handle interruptions of 
-// write operations gracefully so we know which items
-// have been successfully written
-//
-// Successful and failed items are always returned, along
-// with an error field
-//
-// The following conditions can cause a return:
-//
-// -Any exception raised
-// -We hit the timeout limit passed as a parameter
-// -We reach the end of the items to write
-//
+  // batchCreate() is built to handle interruptions of 
+  // write operations gracefully so we know which items
+  // have been successfully written
+  //
+  // Successful and failed items are always returned, along
+  // with an error field
+  //
+  // The following conditions can cause a return:
+  //
+  // -Any exception raised
+  // -We hit the timeout limit passed as a parameter
+  // -We reach the end of the items to write
+  //
   batchCreate: function(tableName, items, timeout=0, writeDelay=DEFAULT_BATCH_WRITE_DELAY) {
 
     const BATCH_LIMIT = 25;
