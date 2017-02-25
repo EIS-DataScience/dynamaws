@@ -42,6 +42,80 @@ function handleQueryResponse(queryResponse, params, delay) {
     });
 }
 
+function batchWrite(tableName, items, buffer, writeDelay) {
+
+  const BATCH_LIMIT = 25;
+
+  // helper that sends the actual Dynamo requests
+  function doBatchWrite(batch) {
+
+    let requestBatch = batch.map(function(item) {
+      return {
+        PutRequest: {
+          Item: item
+        }
+      };
+    });
+
+    let params = {
+      RequestItems: {}
+    };
+
+    params.RequestItems[tableName] = requestBatch;
+
+    return new Promise((resolve, reject) => {
+      setTimeout(() => {
+        const toResolve = docClient.batchWrite(params).promise()
+          .then(data => {
+            return data;
+          });
+
+        resolve(toResolve)
+      }, writeDelay);
+    })
+  }
+
+  function runBatchWrites(batch) {
+
+    // attempt a batch write
+    return doBatchWrite(batch)
+      .then(data => {
+        
+        // check if any failed
+        let failed = data.UnprocessedItems[tableName] ? 
+                    data.UnprocessedItems[tableName].map(item => {
+                      return item.PutRequest.Item;
+                    }) : [];
+
+        // move successful items from failed to success 
+        let success = _.differenceBy(batch, failed, 'id');
+        _.pullAllBy(buffer.failed, success, 'id');
+        buffer.successful.push(...success);          
+
+        // retry failed items if any
+        if (failed.length > 0) {
+          return runBatchWrites(failed);
+        }
+
+        // return if no more batches
+        if (buffer.failed.length <= 0) {
+          return buffer;
+        }
+
+        // else run next batch
+        return runBatchWrites(buffer.failed.slice(0, BATCH_LIMIT));
+
+      })
+      .catch(err => {
+        buffer.err = err;
+        return buffer; 
+      });
+  }
+
+  let firstBatch = buffer.failed.slice(0, BATCH_LIMIT);
+  return runBatchWrites(firstBatch);
+}
+
 module.exports = {
   get: function(tableName) {
     const dynamoUsersPromise = docClient.scan({
@@ -187,108 +261,30 @@ module.exports = {
   // have been successfully written
   //
   // Successful and failed items are always returned, along
-  // with an error field
-  //
-  // The following conditions can cause a return:
-  //
-  // -Any exception raised
-  // -We hit the timeout limit passed as a parameter
-  // -We reach the end of the items to write
+  // with an error field, even in the event of a timeout or an exception
   //
   batchCreate: function(tableName, items, timeout=0, writeDelay=DEFAULT_BATCH_WRITE_DELAY) {
 
-    const BATCH_LIMIT = 25;
-    let successfulItems = []
-    let failedItems = items;  // assume all items failed to begin
+    // response is passed by ref to batchWrite on purpose
+    let responseBuffer = {successful: [],
+                          failed: items,
+                          err: null};
 
-    // we check timeUp before each write request to see if 
-    // we should return early
-    let timeUp = false;
-
-    if (timeout !== 0)
-      setTimeout(() => {
-      timeUp = true;
-    }, timeout);
-
-    // helper that sends the actual Dynamo requests
-    function doBatchWrite(batch) {
-
-      let requestBatch = batch.map(function(item) {
-        return {
-          PutRequest: {
-            Item: item
-          }
-        };
-      });
-
-      let params = {
-        RequestItems: {}
-      };
-
-      params.RequestItems[tableName] = requestBatch;
-
-      return new Promise((resolve, reject) => {
+    // if we hit timeout, whatever is in the buffer is returned immediately
+    if(timeout) {
+      var timeoutPromise = new Promise(resolve => {
         setTimeout(() => {
-          const toResolve = docClient.batchWrite(params).promise()
-            .then(data => {
-              return data;
-            });
-
-          resolve(toResolve)
-        }, writeDelay);
-      })
+          responseBuffer.err = {code: "BatchCreateTimeout",
+                                message: `Dynamaws batch create operation hit given timeout of ${timeout}ms`};
+          resolve(responseBuffer);
+        }, timeout);
+      });
     }
 
-    function runBatchWrites(batch) {
+    // batchWrite() fills the responseBuffer with write results
+    let finishedWritePromise = batchWrite(tableName, items, responseBuffer, writeDelay)
 
-      // return early if timeout
-      if (timeUp) {
-        return {successful: successfulItems,
-                failed: failedItems,
-                err: {code: "BatchCreateTimeout",
-                      message: `Dynamaws batch create operation hit given timeout of ${timeout}`}};
-      }
-      
-      // else attempt a batch write
-      return doBatchWrite(batch)
-        .then(data => {
-          
-          // check if any failed
-          let failed = data.UnprocessedItems[tableName] ? 
-                      data.UnprocessedItems[tableName].map(item => {
-                        return item.PutRequest.Item;
-                      }) : [];
-
-          // move successful items from failed to success 
-          let success = _.differenceBy(batch, failed, 'id');
-          _.pullAllBy(failedItems, success, 'id');
-          successfulItems.push(...success);          
-
-          // retry failed items if any
-          if (failed.length > 0) {
-            return runBatchWrites(failed);
-          }
-
-          // return if no more batches
-          if (failedItems.length <= 0) {
-            return {successful: successfulItems,
-                    failed: failedItems,
-                    err: null};
-          }
-
-          // else run next batch
-          return runBatchWrites(failedItems.slice(0, BATCH_LIMIT));
-
-        })
-        .catch(err => {
-          return {successful: successfulItems,
-                  failed: failedItems,
-                  err: err};
-        })
-    }
-
-    let firstBatch = failedItems.slice(0, BATCH_LIMIT);
-    return runBatchWrites(firstBatch);
+    return timeout ? Promise.race([timeoutPromise, finishedWritePromise]) : finishedWritePromise;
   },
 
   delete: function(tableName, key) {
