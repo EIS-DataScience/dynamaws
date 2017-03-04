@@ -8,15 +8,13 @@ const _ = require("lodash");
 
 const DEFAULT_BATCH_WRITE_DELAY = 300; // ms
 
-
-
 function handleQueryResponse(queryResponse, params, delay) {
   let items = []
-  
-  function handleQueryResponseHelper(queryResponse, params) {    
+
+  function handleQueryResponseHelper(queryResponse, params) {
     items = items.concat(queryResponse.Items);
 
-    if(queryResponse.LastEvaluatedKey) {
+    if (queryResponse.LastEvaluatedKey) {
       const clonedParams = _.cloneDeep(params);
 
       clonedParams["ExclusiveStartKey"] = queryResponse.LastEvaluatedKey;
@@ -42,14 +40,14 @@ function handleQueryResponse(queryResponse, params, delay) {
     });
 }
 
-function batchWrite(tableName, items, buffer, writeDelay) {
+function batchWriteSync(tableName, items, buffer, writeDelay) {
 
   const BATCH_LIMIT = 25;
 
   // helper that sends the actual Dynamo requests
   function doBatchWrite(batch) {
 
-    let requestBatch = batch.map(function(item) {
+    let requestBatch = batch.map(function (item) {
       return {
         PutRequest: {
           Item: item
@@ -80,17 +78,17 @@ function batchWrite(tableName, items, buffer, writeDelay) {
     // attempt a batch write
     return doBatchWrite(batch)
       .then(data => {
-        
+
         // check if any failed
-        let failed = data.UnprocessedItems[tableName] ? 
-                    data.UnprocessedItems[tableName].map(item => {
-                      return item.PutRequest.Item;
-                    }) : [];
+        let failed = data.UnprocessedItems[tableName] ?
+          data.UnprocessedItems[tableName].map(item => {
+            return item.PutRequest.Item;
+          }) : [];
 
         // move successful items from failed to success 
         let success = _.differenceBy(batch, failed, 'id');
         _.pullAllBy(buffer.failed, success, 'id');
-        buffer.successful.push(...success);          
+        buffer.successful.push(...success);
 
         // retry failed items if any
         if (failed.length > 0) {
@@ -108,7 +106,7 @@ function batchWrite(tableName, items, buffer, writeDelay) {
       })
       .catch(err => {
         buffer.err = err;
-        return buffer; 
+        return buffer;
       });
   }
 
@@ -116,34 +114,63 @@ function batchWrite(tableName, items, buffer, writeDelay) {
   return runBatchWrites(firstBatch);
 }
 
+function batchQuerySync(queries, queryFunction, filterFunction, buffer, limit = 0) {
+
+  const runBatchQueries = query => {
+
+    return queryFunction(query)
+
+      .then(items => {
+
+        buffer.items.push(...filterFunction(items));
+
+        queries.shift();
+
+        // Note: we assume here that items returned 
+        // from dynamo are sorted by original query 
+        // key, therefore last item becomes nextItem
+        if (buffer.items.length >= limit || queries.length === 0) {
+          buffer.nextItem = items.length > limit ? items[limit] : null;
+          buffer.items = buffer.items.slice(0, limit);
+          return buffer;
+        }
+
+        return runBatchQueries(queries[0]);
+
+      });
+  }
+
+  return runBatchQueries(queries[0])
+}
+
 module.exports = {
-  get: function(tableName) {
+  get: function (tableName) {
     const dynamoUsersPromise = docClient.scan({
-      TableName : tableName,
+      TableName: tableName,
     })
-    .promise();
+      .promise();
 
 
-    return dynamoUsersPromise.then(function(dynamoData) {
+    return dynamoUsersPromise.then(function (dynamoData) {
       return dynamoData.Items;
     });
   },
 
-  getOne: function(tableName, key) {
+  getOne: function (tableName, key) {
     const params = {
       TableName: tableName,
       Key: key
     };
 
     return docClient.get(params)
-    .promise()
-    .then((dynamoData) => {
-      return dynamoData.Item;
-    });
+      .promise()
+      .then((dynamoData) => {
+        return dynamoData.Item;
+      });
   },
 
   // TODO: Deal with UnprocessedKeys, exponential backoff.
-  batchGet: function(tableName, keyString, keyValues) {
+  batchGet: function (tableName, keyString, keyValues) {
     const keys = keyValues.map((keyValue) => {
       let keyObj = {};
 
@@ -154,13 +181,13 @@ module.exports = {
 
     const BATCH_LIMIT = 100;
     const batches = keys.reduce((acc, key) => {
-      let lastIndex = acc.length === 0? 0 : acc.length - 1;
+      let lastIndex = acc.length === 0 ? 0 : acc.length - 1;
 
-      if(!acc[lastIndex]) {
+      if (!acc[lastIndex]) {
         acc[lastIndex] = [];
       }
 
-      if(acc[lastIndex].length >= BATCH_LIMIT) {
+      if (acc[lastIndex].length >= BATCH_LIMIT) {
         acc.push([]);
 
         lastIndex = acc.length - 1;
@@ -183,7 +210,7 @@ module.exports = {
       return docClient.batchGet(params)
         .promise()
         .then((dynamoData) => {
-          if(Object.keys(dynamoData.UnprocessedKeys).length > 0) {
+          if (Object.keys(dynamoData.UnprocessedKeys).length > 0) {
             console.warn("There were unprocessed keys in batchGet. The keys are:", dynamoData.UnprocessedKeys);
           }
 
@@ -197,9 +224,9 @@ module.exports = {
       });
   },
 
-  create: function(tableName, newItem) {
+  create: function (tableName, newItem) {
     const params = {
-      TableName : tableName,
+      TableName: tableName,
       Item: newItem,
     };
 
@@ -210,7 +237,7 @@ module.exports = {
       });
   },
 
-  update: function(tableName, key, newItem) {
+  update: function (tableName, key, newItem) {
     const expressions = _.reduce(newItem, (acc, itemVal, itemKey) => {
       let updateExpressionArr = acc.updateExpressionArr;
       let expressionAttributeValues = acc.expressionAttributeValues;
@@ -231,10 +258,10 @@ module.exports = {
         expressionAttributeValues: expressionAttributeValues
       };
     }, {
-      updateExpressionArr: [],
-      expressionAttributeNames: {},
-      expressionAttributeValues: {}
-    });
+        updateExpressionArr: [],
+        expressionAttributeNames: {},
+        expressionAttributeValues: {}
+      });
 
     let updateExpression = "set " + expressions.updateExpressionArr.join(", ");
 
@@ -256,56 +283,61 @@ module.exports = {
       });
   },
 
-  // batchCreate() is built to handle interruptions of 
-  // write operations gracefully so we know which items
-  // have been successfully written
-  //
-  // Successful and failed items are always returned, along
-  // with an error field, even in the event of a timeout or an exception
-  //
-  batchCreate: function(tableName, items, timeout=0, writeDelay=DEFAULT_BATCH_WRITE_DELAY) {
+  /**
+   * Runs a batch of writes synchonously 
+   * @param {string} tableName 
+   * @param {object[]} items 
+   * @param {number} timeout - optional, causes early return 
+   * @param {number} writeDelay
+   * @return {object} successful/failed items and err if any
+   */
+  batchCreate: function (tableName, items, timeout = 0, writeDelay = DEFAULT_BATCH_WRITE_DELAY) {
 
     // response is passed by ref to batchWrite on purpose
-    let responseBuffer = {successful: [],
-                          failed: items,
-                          err: null};
+    let responseBuffer = {
+      successful: [],
+      failed: items,
+      err: null
+    };
 
     // if we hit timeout, whatever is in the buffer is returned immediately
-    if(timeout) {
+    if (timeout) {
       var timeoutPromise = new Promise(resolve => {
         setTimeout(() => {
-          responseBuffer.err = {code: "BatchCreateTimeout",
-                                message: `Dynamaws batch create operation hit given timeout of ${timeout}ms`};
+          responseBuffer.err = {
+            code: "BatchCreateTimeout",
+            message: `Dynamaws batch create operation hit given timeout of ${timeout}ms`
+          };
           resolve(responseBuffer);
         }, timeout);
       });
     }
 
     // batchWrite() fills the responseBuffer with write results
-    let finishedWritePromise = batchWrite(tableName, items, responseBuffer, writeDelay)
+    let finishedWritePromise = batchWriteSync(tableName, items, responseBuffer, writeDelay)
 
     return timeout ? Promise.race([timeoutPromise, finishedWritePromise]) : finishedWritePromise;
   },
 
-  delete: function(tableName, key) {
+  delete: function (tableName, key) {
     var params = {
-      TableName : tableName,
+      TableName: tableName,
       Key: key,
       ReturnValues: "ALL_OLD"
     };
 
     return docClient.delete(params)
-    .promise()
-    .then((dynamoData) => {
-      return dynamoData.Attributes;
-    });
+      .promise()
+      .then((dynamoData) => {
+        return dynamoData.Attributes;
+      });
   },
 
-  batchDelete: function(tableName, keyString, keyValues) {
+  batchDelete: function (tableName, keyString, keyValues) {
     var deleteRequestArr = keyValues.map((keyVal) => {
       return {
         DeleteRequest: {
-          Key: {[keyString]: keyVal}
+          Key: { [keyString]: keyVal }
         }
       };
     });
@@ -313,7 +345,7 @@ module.exports = {
     return batchWrite(tableName, deleteRequestArr);
   },
 
-  queryIndex: function(tableName, indexName, queryKey, queryVal, limit=0, delay=0) {
+  queryIndex: function (tableName, indexName, queryKey, queryVal, limit = 0, delay = 0) {
     const conditionKey = `#${queryKey}`;
     const conditionVal = `:${queryKey}`;
 
@@ -331,7 +363,7 @@ module.exports = {
       ExpressionAttributeValues: expressionAttributeValues,
     };
 
-    if(limit > 0) {
+    if (limit > 0) {
       params.Limit = limit;
     }
 
@@ -340,5 +372,59 @@ module.exports = {
       .then((dynamoData) => {
         return handleQueryResponse(dynamoData, params, delay);
       });
+  },
+
+  /**
+   * Runs a batch of queries synchonously, used in combination with queryIndex
+   * @param  {string[]} queries - array of queries to send
+   * @param  {object} queryFunction - function to run queries through
+   * @param  {object} filterFunction - optional filtering after each request
+   * @param  {number} limit - max items to get
+   * @param  {number} timeout - optional timeout, causes early return
+   * @return {object} items retrieved and next item to continue from
+   */
+  batchQuery: function (queries, queryFunction, filterFunction, limit = 0, timeout = 0) {
+
+    if (!filterFunction) {
+      filterFunction = items => items;
+    }
+
+    let responseBuffer = {
+      nextItem: null,
+      items: []
+    }
+
+    // If we hit timeout, whatever is in the buffer is returned immediately
+    if (timeout) {
+      var timeoutPromise = new Promise(resolve => {
+        setTimeout(() => {
+          responseBuffer.err = {
+            code: "BatchQueryTimeout",
+            message: `Dynamaws batch query operation hit given timeout of ${timeout}ms`
+          };
+
+          let len = responseBuffer.items.length;
+          responseBuffer.nextItem = responseBuffer.items[len - 1] ?
+            responseBuffer.items[len - 1] :
+            null;
+
+          if (responseBuffer.nextItem) {
+            responseBuffer.items.pop();
+          }
+
+          resolve(responseBuffer);
+        }, timeout);
+      });
+    }
+
+    let finishedQueriesPromise = batchQuerySync(queries,
+      queryFunction,
+      filterFunction,
+      responseBuffer,
+      limit);
+
+    return timeout ? Promise.race([timeoutPromise, finishedQueriesPromise]) : finishedQueriesPromise;
+
   }
 }
+
