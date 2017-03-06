@@ -6,8 +6,6 @@ const docClient = new AWS.DynamoDB.DocumentClient();
 
 const _ = require("lodash");
 
-const DEFAULT_BATCH_WRITE_DELAY = 300; // ms
-
 function handleQueryResponse(queryResponse, params, delay) {
   let items = []
 
@@ -113,7 +111,6 @@ function batchWriteSync(tableName, items, buffer, writeDelay) {
   let firstBatch = buffer.failed.slice(0, BATCH_LIMIT);
   return runBatchWrites(firstBatch);
 }
-
 function batchQuerySync(queries, queryFunction, filterFunction, buffer, limit = 0) {
 
   const runBatchQueries = query => {
@@ -143,6 +140,70 @@ function batchQuerySync(queries, queryFunction, filterFunction, buffer, limit = 
   return runBatchQueries(queries[0])
 }
 
+/**
+ * Runs batchGet requests syncronously 
+ * @param {string} tableName
+ * @param {string} keyString 
+ * @param {object} filterFunction 
+ * @param {object} buffer 
+ * @param {number} limit 
+ */
+function batchGetSync(tableName, keyString, filterFunction, buffer, limit = 0) {
+
+  const BATCH_LIMIT = 100; // Set by AWS
+
+  // Sends the actual Dynamo requests
+  function doBatchGet(batch) {
+
+    const keys = batch.map((keyValue) => {
+      let keyObj = {};
+
+      keyObj[keyString] = keyValue;
+
+      return keyObj;
+    });
+
+    const params = {
+      RequestItems: {
+        [tableName]: {
+          Keys: keys
+        }
+      }
+    };
+
+    return docClient.batchGet(params).promise();
+  }
+
+  // Runs batch requests recursively  
+  function runBatchGets(batch) {
+
+    return doBatchGet(batch)
+      .then(data => {
+
+        let success = data.Responses[tableName];
+        let failed = data.UnprocessedKeys[tableName];
+
+        buffer.items.push(...filterFunction(success));
+        _.pullAll(buffer.nextKeys, success.map(item => item.id))
+
+        if (failed && failed.length > 0) {
+          return runBatchGets(failed.map(item => item[keyString]));
+        }
+
+        if (buffer.nextKeys.length <= 0) {
+          return buffer;
+        }
+
+        return runBatchGets(buffer.nextKeys.slice(0, BATCH_LIMIT));
+      });
+
+  }
+
+  return runBatchGets(buffer.nextKeys.slice(0, BATCH_LIMIT));
+
+}
+
+
 module.exports = {
   get: function (tableName) {
     const dynamoUsersPromise = docClient.scan({
@@ -166,61 +227,6 @@ module.exports = {
       .promise()
       .then((dynamoData) => {
         return dynamoData.Item;
-      });
-  },
-
-  // TODO: Deal with UnprocessedKeys, exponential backoff.
-  batchGet: function (tableName, keyString, keyValues) {
-    const keys = keyValues.map((keyValue) => {
-      let keyObj = {};
-
-      keyObj[keyString] = keyValue;
-
-      return keyObj;
-    });
-
-    const BATCH_LIMIT = 100;
-    const batches = keys.reduce((acc, key) => {
-      let lastIndex = acc.length === 0 ? 0 : acc.length - 1;
-
-      if (!acc[lastIndex]) {
-        acc[lastIndex] = [];
-      }
-
-      if (acc[lastIndex].length >= BATCH_LIMIT) {
-        acc.push([]);
-
-        lastIndex = acc.length - 1;
-      }
-
-      acc[lastIndex].push(key);
-
-      return acc;
-    }, []);
-
-    const batchesDonePromises = batches.map((keysBatch) => {
-      const params = {
-        RequestItems: {
-          [tableName]: {
-            Keys: keysBatch
-          }
-        }
-      };
-
-      return docClient.batchGet(params)
-        .promise()
-        .then((dynamoData) => {
-          if (Object.keys(dynamoData.UnprocessedKeys).length > 0) {
-            console.warn("There were unprocessed keys in batchGet. The keys are:", dynamoData.UnprocessedKeys);
-          }
-
-          return dynamoData.Responses[tableName];
-        });
-    });
-
-    return Promise.all(batchesDonePromises)
-      .then((resultArr) => {
-        return _.flatten(resultArr);
       });
   },
 
@@ -291,7 +297,7 @@ module.exports = {
    * @param {number} writeDelay
    * @return {object} successful/failed items and err if any
    */
-  batchCreate: function (tableName, items, timeout = 0, writeDelay = DEFAULT_BATCH_WRITE_DELAY) {
+  batchCreate: function (tableName, items, timeout = 0, writeDelay = 0) {
 
     // response is passed by ref to batchWrite on purpose
     let responseBuffer = {
@@ -372,6 +378,50 @@ module.exports = {
       .then((dynamoData) => {
         return handleQueryResponse(dynamoData, params, delay);
       });
+  },
+
+  /**
+   * Runs batch of get requests synchronously, returns early if timeout
+   * @param {string} tableName -
+   * @param {string} keyString - name of primary key of table
+   * @param {string[]} keyValues - primary keys
+   * @param {object} filterFunction - optional filtering
+   * @param {number} limit - max items to get
+   * @param {number} timeout - optional timeout
+   */
+  batchGet: function (tableName, keyString, keyValues, filterFunction, limit = 0, timeout = 0) {
+
+    if (!filterFunction) {
+      filterFunction = items => items;
+    }
+
+    let responseBuffer = {
+      items: [],
+      nextKeys: keyValues
+    }
+
+    // If we hit timeout, whatever is in the buffer is returned immediately
+    if (timeout) {
+      var timeoutPromise = new Promise(resolve => {
+        setTimeout(() => {
+          responseBuffer.err = {
+            code: "BatchGetTimeout",
+            message: `Dynamaws batch get operation hit given timeout of ${timeout}ms`
+          };
+
+          resolve(responseBuffer);
+        }, timeout);
+      });
+    }
+
+    let finishedGetsPromise = batchGetSync(tableName,
+      keyString,
+      filterFunction,
+      responseBuffer,
+      limit);
+
+    return timeout ? Promise.race([timeoutPromise, finishedGetsPromise]) : finishedGetsPromise;
+
   },
 
   /**
