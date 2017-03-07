@@ -123,12 +123,13 @@ function batchQuerySync(queries, queryFunction, filterFunction, buffer, limit = 
 
         queries.shift();
 
-        // Note: we assume here that items returned 
-        // from dynamo are sorted by original query 
-        // key, therefore last item becomes nextItem
-        if (buffer.items.length >= limit || queries.length === 0) {
-          buffer.nextItem = items.length > limit ? items[limit] : null;
-          buffer.items = buffer.items.slice(0, limit);
+        if (buffer.items.length >= limit) {
+          buffer.nextItem = buffer.items[limit - 1];
+          buffer.items = buffer.items.slice(0, limit - 1);
+          return buffer;
+        }
+
+        if (queries.length === 0) {
           return buffer;
         }
 
@@ -454,9 +455,7 @@ module.exports = {
           };
 
           let len = responseBuffer.items.length;
-          responseBuffer.nextItem = responseBuffer.items[len - 1] ?
-            responseBuffer.items[len - 1] :
-            null;
+          responseBuffer.nextItem = responseBuffer.items[len - 1] || null;
 
           if (responseBuffer.nextItem) {
             responseBuffer.items.pop();
