@@ -204,6 +204,77 @@ function batchGetSync(tableName, keyString, filterFunction, buffer, limit = 0) {
 
 }
 
+function batchDeleteSync(tableName, keyString, buffer, writeDelay) {
+
+  const BATCH_LIMIT = 100; // Set by AWS
+
+  // Sends the actual Dynamo requests
+  function doBatchDelete(batch) {
+
+    const requestBatch = buffer.nextKeys.map((keyVal) => {
+      return {
+        DeleteRequest: {
+          Key: { [keyString]: keyVal }
+        }
+      };
+    });
+
+    let params = {
+      RequestItems: {}
+    };
+
+    params.RequestItems[tableName] = requestBatch;
+
+    return new Promise((resolve, reject) => {
+      setTimeout(() => {
+        const toResolve = docClient.batchWrite(params).promise()
+          .then(data => {
+            return data;
+          });
+
+        resolve(toResolve)
+      }, writeDelay);
+    })
+  }
+
+  function runBatchDeletes(batch) {
+
+    // attempt a batch delete
+    return doBatchDelete(batch)
+      .then(data => {
+
+        // check if any failed
+        let failed = data.UnprocessedItems[tableName] ?
+          data.UnprocessedItems[tableName].map(item => {
+            return item.DeleteRequest.Key;
+          }) : [];
+
+        // move successful items from failed to success 
+        let success = _.difference(batch, failed);
+        _.pullAllBy(buffer.nextKeys, success);
+
+        // retry failed items if any
+        if (failed.length > 0) {
+          return runBatchDeletes(failed);
+        }
+
+        // return if no more batches
+        if (buffer.nextKeys.length <= 0) {
+          return buffer;
+        }
+
+        // else run next batch
+        return runBatchDeletes(buffer.nextKeys.slice(0, BATCH_LIMIT));
+
+      })
+      .catch(err => {
+        buffer.err = err;
+        return buffer;
+      });
+  }
+
+  return runBatchDeletes(buffer.nextKeys.slice(0, BATCH_LIMIT));
+}
 
 module.exports = {
   get: function (tableName) {
@@ -300,10 +371,10 @@ module.exports = {
    */
   batchCreate: function (tableName, items, timeout = 0, writeDelay = 0) {
 
-    // response is passed by ref to batchWrite on purpose
+    // response is passed by ref to batchWrite
     let responseBuffer = {
       successful: [],
-      failed: items,
+      failed: _.cloneDeep(items),
       err: null
     };
 
@@ -320,7 +391,6 @@ module.exports = {
       });
     }
 
-    // batchWrite() fills the responseBuffer with write results
     let finishedWritePromise = batchWriteSync(tableName, items, responseBuffer, writeDelay)
 
     return timeout ? Promise.race([timeoutPromise, finishedWritePromise]) : finishedWritePromise;
@@ -340,16 +410,29 @@ module.exports = {
       });
   },
 
-  batchDelete: function (tableName, keyString, keyValues) {
-    var deleteRequestArr = keyValues.map((keyVal) => {
-      return {
-        DeleteRequest: {
-          Key: { [keyString]: keyVal }
-        }
-      };
-    });
+  batchDelete: function (tableName, keyString, keyValues, timeout = 0, writeDelay = 0) {
 
-    return batchWrite(tableName, deleteRequestArr);
+    // response is passed by ref to batchWrite
+    let responseBuffer = {
+      nextKeys: _.clone(keyValues)
+    }
+
+    // if we hit timeout, whatever is in the buffer is returned immediately
+    if (timeout) {
+      var timeoutPromise = new Promise(resolve => {
+        setTimeout(() => {
+          responseBuffer.err = {
+            code: "BatchDeleteTimeout",
+            message: `Dynamaws batch delete operation hit given timeout of ${timeout}ms`
+          };
+          resolve(responseBuffer);
+        }, timeout);
+      });
+    }
+
+    let finishedDeletePromise = batchDeleteSync(tableName, keyString, responseBuffer, writeDelay);
+
+    return timeout ? Promise.race([timeoutPromise, finishedDeletePromise]) : finishedDeletePromise;
   },
 
   queryIndex: function (tableName, indexName, queryKey, queryVal, limit = 0, delay = 0) {
@@ -398,7 +481,7 @@ module.exports = {
 
     let responseBuffer = {
       items: [],
-      nextKeys: keyValues
+      nextKeys: _.clone(keyValues)
     }
 
     // If we hit timeout, whatever is in the buffer is returned immediately
@@ -466,7 +549,7 @@ module.exports = {
       });
     }
 
-    let finishedQueriesPromise = batchQuerySync(queries,
+    let finishedQueriesPromise = batchQuerySync(_.clone(queries),
       queryFunction,
       filterFunction,
       responseBuffer,
