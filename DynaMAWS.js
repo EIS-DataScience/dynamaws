@@ -38,7 +38,7 @@ function handleQueryResponse(queryResponse, params, delay) {
     });
 }
 
-function batchWriteSync(tableName, items, buffer, writeDelay) {
+function batchWriteSync(tableName, primaryKeyName, items, buffer, writeDelay) {
 
   const BATCH_LIMIT = 25;
 
@@ -84,8 +84,8 @@ function batchWriteSync(tableName, items, buffer, writeDelay) {
           }) : [];
 
         // move successful items from failed to success 
-        let success = _.differenceBy(batch, failed, 'id');
-        _.pullAllBy(buffer.failed, success, 'id');
+        let success = _.differenceBy(batch, failed, primaryKeyName);
+        _.pullAllBy(buffer.failed, success, primaryKeyName);
         buffer.successful.push(...success);
 
         // retry failed items if any
@@ -369,7 +369,7 @@ module.exports = {
    * @param {number} writeDelay
    * @return {object} successful/failed items and err if any
    */
-  batchCreate: function (tableName, items, timeout = 0, writeDelay = 0) {
+  batchCreate: function (tableName, primaryKeyName, items, timeout = 0, writeDelay = 0) {
 
     // response is passed by ref to batchWrite
     let responseBuffer = {
@@ -391,7 +391,7 @@ module.exports = {
       });
     }
 
-    let finishedWritePromise = batchWriteSync(tableName, items, responseBuffer, writeDelay)
+    let finishedWritePromise = batchWriteSync(tableName, primaryKeyName, items, responseBuffer, writeDelay)
 
     return timeout ? Promise.race([timeoutPromise, finishedWritePromise]) : finishedWritePromise;
   },
